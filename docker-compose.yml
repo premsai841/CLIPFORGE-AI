@@ -1,0 +1,24 @@
+services:
+  api:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      CLIPFORGE_OUTPUT_DIR: /app/storage
+      MAX_UPLOAD_MB: 800
+      WHISPER_MODEL: tiny
+      CORS_ORIGINS: http://localhost:3000
+    volumes:
+      - clipforge_storage:/app/storage
+  web:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    depends_on:
+      - api
+volumes:
+  clipforge_storage:
