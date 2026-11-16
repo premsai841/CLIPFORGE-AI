@@ -1,75 +1,45 @@
 # CLIPFORGE AI
 
-Create vertical Shorts from videos you own or are licensed to use.
+A free, browser-based video utility for turning videos you own or are authorized to edit into vertical 9:16 MP4 clips.
 
-## MVP features
-- Upload a local video file (MP4, MOV, MKV, WebM).
-- Optional source URL field for attribution/reference.
-- Speech transcription with faster-whisper.
-- Transcript-based highlight selection.
-- Automatic 9:16 (1080×1920) crop and burned-in captions.
-- Download individual MP4 clips or one ZIP bundle.
+## Live deployment
 
-## Copyright and platform compliance
-This app intentionally does **not** download YouTube videos from pasted URLs. The URL field is metadata/reference only. Upload the source video file only if you own it or have permission to edit and publish it. Cropping, zooming, subtitles, or changing aspect ratio does not make someone else's content copyright-free. No background music is added by default; use only music and visual assets you have rights to use. No tool can guarantee that a platform will never issue a claim.
+GitHub Actions builds and deploys the static website to GitHub Pages on every push to `main`. After enabling **Settings → Pages → Build and deployment → Source: GitHub Actions**, the site is available at:
 
-## Requirements
-- Python 3.11+
-- FFmpeg installed and available on PATH
-- Node.js 20+
+`https://premsai841.github.io/CLIPFORGE-AI/`
 
-## Run locally
+## What works in this free browser MVP
 
-### Backend
-```bash
-cd backend
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install -r requirements-ml.txt
-uvicorn app.main:app --reload --port 8000
-```
+- Kixy-inspired dark creator dashboard.
+- Upload a local video file (up to 300 MB recommended).
+- Generate multiple 9:16 vertical MP4 clips in the browser with FFmpeg.wasm.
+- Download each generated clip.
+- No login, API key, subscription, or server upload required for this workflow.
 
-The first faster-whisper run downloads model weights. Set `WHISPER_MODEL=tiny` for lower resource use or `base` for a better balance.
+## Important limitations
 
-### Frontend
+- The current clip selection is evenly spaced, **not AI highlight detection**.
+- Automatic speech recognition and animated captions are not implemented yet.
+- The browser does all processing; performance depends on the device and available memory. Large/long videos may fail on phones.
+- The YouTube URL workflow is not enabled. A URL alone does not grant permission or provide authorized access to the source media. Upload a video file you own or have permission to edit.
+- Editing, cropping, or adding captions does not remove copyright restrictions. No service can guarantee zero copyright claims.
+
+## Deploy
+
+1. Open this repository's **Settings → Pages**.
+2. Under **Build and deployment**, choose **GitHub Actions** as the source.
+3. Push to `main` (or run the deployment workflow manually).
+4. Wait for the **Deploy CLIPFORGE AI to GitHub Pages** workflow to finish.
+5. Open the Pages URL shown in the workflow deployment.
+
+## Local development (optional)
+
 ```bash
 cd frontend
 npm install
-cp .env.example .env.local
 npm run dev
 ```
-Open http://localhost:3000. The API defaults to http://localhost:8000.
-
-### Docker
-```bash
-docker compose up --build
-```
-
-## Environment
-Backend:
-- `CLIPFORGE_OUTPUT_DIR` default `./storage`
-- `MAX_UPLOAD_MB` default `800`
-- `WHISPER_MODEL` default `base`
-- `CORS_ORIGINS` default local Next.js origin
-
-Frontend:
-- `NEXT_PUBLIC_API_URL` default `http://localhost:8000`
-
-## Known limitations
-- YouTube URL ingestion is not implemented; upload an authorized source file.
-- Highlight selection is a heuristic MVP, not editorial judgment.
-- Reframing uses a centered crop; automatic face/speaker tracking is planned.
-- Captions are segment-level and may need manual correction.
-- Processing speed depends on local CPU/GPU, video duration, and model size.
-- This MVP is not a copyright clearance service and does not guarantee platform acceptance.
-
-## Roadmap
-1. Speaker-aware reframing and editable clip timeline.
-2. Word-level animated caption presets.
-3. Licensed music and stock-asset integrations.
-4. Background job queue and cloud deployment with storage limits.
 
 ## License
-MIT for this project code. Third-party packages and all media retain their own licenses.
+
+MIT for this project code. FFmpeg.wasm and other dependencies retain their respective licenses.
