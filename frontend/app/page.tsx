@@ -1,85 +1,146 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { FFmpeg } from "@ffmpeg/ffmpeg";
+import { toBlobURL } from "@ffmpeg/util";
 
-type Clip = {
-  filename: string;
-  duration_seconds: number;
-  start_seconds: number;
-  end_seconds: number;
-  score: number;
-  transcript_preview: string;
-  download_url: string;
-};
-type Result = { job_id: string; duration_seconds: number; clips: Clip[]; zip_url: string };
-
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+type ExportedClip = { name: string; url: string; size: number };
 
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
-  const [sourceUrl, setSourceUrl] = useState("");
+  const [duration, setDuration] = useState(0);
   const [clipCount, setClipCount] = useState(3);
-  const [clipLength, setClipLength] = useState(45);
-  const [rights, setRights] = useState(false);
+  const [clipLength, setClipLength] = useState(30);
+  const [status, setStatus] = useState("Upload a video you own or are authorized to edit.");
+  const [progress, setProgress] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [exports, setExports] = useState<ExportedClip[]>([]);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<Result | null>(null);
+  const ffmpegRef = useRef<FFmpeg | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  async function submit() {
-    if (!file || !rights || busy) return;
-    setBusy(true); setError(""); setResult(null);
-    const body = new FormData();
-    body.append("file", file);
-    body.append("rights_confirmed", "true");
-    body.append("clip_count", String(clipCount));
-    body.append("max_clip_seconds", String(clipLength));
-    body.append("source_url", sourceUrl);
+  useEffect(() => {
+    const engine = new FFmpeg();
+    engine.on("progress", ({ progress }) => setProgress(Math.max(0, Math.min(100, Math.round(progress * 100)))));
+    ffmpegRef.current = engine;
+    return () => { for (const item of exports) URL.revokeObjectURL(item.url); };
+  }, []);
+
+  function chooseVideo(next: File | null) {
+    setExports([]);
+    setError("");
+    setFile(next);
+    setDuration(0);
+    if (!next) return;
+    const preview = document.createElement("video");
+    preview.preload = "metadata";
+    preview.onloadedmetadata = () => { setDuration(Number.isFinite(preview.duration) ? preview.duration : 0); URL.revokeObjectURL(preview.src); };
+    preview.onerror = () => setError("This video format could not be read by your browser.");
+    preview.src = URL.createObjectURL(next);
+  }
+
+  async function loadEngine() {
+    if (loaded) return;
+    setStatus("Loading free browser video engine…");
+    const base = "https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd";
+    await ffmpegRef.current!.load({
+      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
+      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
+    });
+    setLoaded(true);
+  }
+
+  async function generate() {
+    if (!file || !duration || busy) return;
+    if (file.size > 300 * 1024 * 1024) { setError("For this free browser version, please use a video under 300 MB."); return; }
+    setBusy(true); setError(""); setExports([]); setProgress(0);
+    const created: ExportedClip[] = [];
     try {
-      const response = await fetch(`${API}/api/process`, { method: "POST", body });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Processing failed");
-      setResult(data);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not connect to CLIPFORGE API.");
+      await loadEngine();
+      const ffmpeg = ffmpegRef.current!;
+      const inputName = "clipforge-source";
+      await ffmpeg.writeFile(inputName, new Uint8Array(await file.arrayBuffer()));
+      const count = Math.min(clipCount, Math.max(1, Math.floor(duration / 5)));
+      const length = Math.min(clipLength, Math.floor(duration));
+      for (let i = 0; i < count; i++) {
+        const maxStart = Math.max(0, duration - length);
+        const start = count === 1 ? 0 : Math.round((maxStart * i) / (count - 1));
+        const output = `clipforge-${i + 1}.mp4`;
+        setStatus(`Creating vertical clip ${i + 1} of ${count}…`);
+        const code = await ffmpeg.exec([
+          "-ss", String(start), "-i", inputName, "-t", String(length),
+          "-vf", "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1",
+          "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+          "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", output
+        ]);
+        if (code !== 0) throw new Error("FFmpeg could not process this file. Try an MP4 video.");
+        const data = await ffmpeg.readFile(output);
+        const blob = new Blob([data as BlobPart], { type: "video/mp4" });
+        created.push({ name: `CLIPFORGE-Short-${i + 1}.mp4`, url: URL.createObjectURL(blob), size: blob.size });
+        setExports([...created]);
+      }
+      setStatus("Your vertical clips are ready to download.");
+      setProgress(100);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong while processing.");
+      setStatus("Processing stopped.");
     } finally { setBusy(false); }
   }
 
   return (
-    <main className="shell">
-      <nav className="nav"><a className="brand" href="#"><span className="brandMark">C</span> CLIPFORGE<span className="brandAI">AI</span></a><span className="navTag">VIDEO → SHORTS WORKSPACE</span></nav>
-      <section className="hero">
-        <div className="eyebrow"><span className="pulse" /> AI SHORT-FORM STUDIO</div>
-        <h1>Long videos.<br /><span>Short-form impact.</span></h1>
-        <p className="heroText">Find the moments worth watching. Turn them into vertical clips with automatic captions and clean edits.</p>
-      </section>
+    <main className="appShell">
+      <aside className="sidebar">
+        <a className="logo" href="#"><span className="logoIcon">C</span><span>CLIPFORGE<span className="logoAI"> AI</span></span></a>
+        <div className="sideLabel">WORKSPACE</div>
+        <a className="sideLink active" href="#clipper"><span>✂</span> AI Clipper <b>NEW</b></a>
+        <a className="sideLink" href="#captions"><span>▤</span> Auto Captions <em>SOON</em></a>
+        <a className="sideLink" href="#resize"><span>▣</span> Video Resizer <em>SOON</em></a>
+        <div className="sideLabel toolsLabel">YOUR LIBRARY</div>
+        <a className="sideLink" href="#exports"><span>◷</span> Recent exports</a>
+        <div className="sidebarBottom"><div className="freePlan"><span className="planIcon">✦</span><div><strong>Free workspace</strong><small>Browser-based processing</small></div></div><p>Your videos stay on your device. No account or subscription needed.</p></div>
+      </aside>
 
-      <section className="workspace">
-        <div className="sectionHead"><div><span className="step">01 / SOURCE</span><h2>Bring your video</h2></div><span className="format">OUTPUT · 9:16 VERTICAL</span></div>
-        <label className="urlLabel" htmlFor="sourceUrl">SOURCE URL <span>OPTIONAL REFERENCE</span></label>
-        <input id="sourceUrl" className="urlInput" value={sourceUrl} onChange={e => setSourceUrl(e.target.value)} placeholder="Paste a YouTube or source link for reference…" />
-        <div className="upload" onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); const dropped = e.dataTransfer.files?.[0]; if (dropped) setFile(dropped); }}>
-          <input id="videoFile" type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/webm,video/x-m4v" onChange={e => setFile(e.target.files?.[0] || null)} />
-          <label htmlFor="videoFile" className="uploadIcon">↑</label>
-          <div className="uploadTitle">{file ? file.name : "Drop your video here"}</div>
-          <div className="uploadSub">{file ? `${(file.size / 1024 / 1024).toFixed(1)} MB · Ready to process` : "or click to browse · MP4, MOV, MKV, WebM"}</div>
+      <section className="mainArea">
+        <header className="topbar"><div className="breadcrumb">Workspace <span>/</span> AI Clipper</div><div className="topRight"><span className="onlineDot"/> FREE PLAN <div className="avatar">C</div></div></header>
+        <div className="content">
+          <div className="welcome"><div><div className="eyebrow"><span/> YOUR AI VIDEO WORKSPACE</div><h1>Make every second <span>count.</span></h1><p>Turn your own long videos into scroll-stopping vertical clips.</p></div><div className="heroBadge">✦ &nbsp;100% FREE TO USE</div></div>
+
+          <div className="toolTabs"><a className="tab selected" href="#clipper">✂ &nbsp; AI Clipper</a><a className="tab disabled" href="#captions">▤ &nbsp; Captions <small>SOON</small></a><a className="tab disabled" href="#resize">▣ &nbsp; Resize <small>SOON</small></a></div>
+
+          <section className="panel" id="clipper">
+            <div className="panelHead"><div><div className="stepLabel">01 / SOURCE VIDEO</div><h2>Start with your video</h2><p>Upload a video file from your device. Processing happens in your browser.</p></div><div className="outputPill"><span/> 9:16 VERTICAL</div></div>
+            <div className={`dropzone ${file ? "hasFile" : ""}`} onDragOver={e => e.preventDefault()} onDrop={e => { e.preventDefault(); chooseVideo(e.dataTransfer.files?.[0] || null); }}>
+              <input ref={inputRef} type="file" accept="video/mp4,video/webm,video/quicktime,video/x-matroska" onChange={e => chooseVideo(e.target.files?.[0] || null)} />
+              <button className="uploadSymbol" onClick={() => inputRef.current?.click()}>↑</button>
+              <strong>{file ? file.name : "Drop your video here"}</strong>
+              <span>{file ? `${(file.size / 1024 / 1024).toFixed(1)} MB · ${duration ? formatTime(duration) : "Reading video…"}` : "or browse files from your device"}</span>
+              <small>MP4, MOV, WebM · Max 300 MB · No upload to a server</small>
+            </div>
+            <div className="settingsGrid">
+              <label><span>NUMBER OF CLIPS</span><select value={clipCount} onChange={e => setClipCount(Number(e.target.value))}>{[1,2,3,4,5,6].map(n => <option key={n} value={n}>{n} clips</option>)}</select></label>
+              <label><span>CLIP DURATION</span><select value={clipLength} onChange={e => setClipLength(Number(e.target.value))}><option value={15}>15 seconds</option><option value={30}>30 seconds</option><option value={45}>45 seconds</option><option value={60}>60 seconds</option><option value={90}>90 seconds</option></select></label>
+              <div className="settingStatic"><span>ASPECT RATIO</span><strong>9:16 <small>1080 × 1920</small></strong></div>
+            </div>
+            <div className="notice"><span>ⓘ</span><p>This free version creates evenly spaced vertical clips. AI highlight detection and automatic speech captions are not enabled yet. Only use videos you own or have permission to edit.</p></div>
+            {error && <div className="errorBox">{error}</div>}
+            {busy && <div className="progressWrap"><div className="progressText"><span>{status}</span><strong>{progress}%</strong></div><div className="progressTrack"><i style={{width:`${progress}%`}}/></div></div>}
+            <button className="generateBtn" disabled={!file || !duration || busy} onClick={generate}>{busy ? <><span className="loader"/> Processing in your browser…</> : <>Generate vertical clips <span>↗</span></>}</button>
+            <div className="privacyLine">🔒 &nbsp;Your video stays on your device. No sign-up. No paid credits.</div>
+          </section>
+
+          <section className="exports" id="exports"><div className="exportsHead"><div><div className="stepLabel">02 / YOUR CONTENT</div><h2>Your exports <span>{exports.length}</span></h2></div><span className="exportStatus">{exports.length ? "READY TO DOWNLOAD" : "YOUR CLIPS WILL APPEAR HERE"}</span></div>
+            {exports.length ? <div className="exportGrid">{exports.map((item,i)=><article className="exportCard" key={item.name}><div className="videoThumb"><span>9:16</span><strong>SHORT<br/>{String(i+1).padStart(2,"0")}</strong><small>MP4</small></div><div className="exportInfo"><strong>{item.name}</strong><span>{(item.size/1024/1024).toFixed(1)} MB · Vertical video</span><a href={item.url} download={item.name}>↓ &nbsp; Download MP4</a></div></article>)}</div> : <div className="emptyState"><div>▧</div><strong>No exports yet</strong><span>Your finished vertical clips will show up here.</span></div>}
+          </section>
+          <footer><span>CLIPFORGE AI</span><span>BUILT FOR CREATORS · POWERED BY OPEN SOURCE</span></footer>
         </div>
-
-        <div className="settings">
-          <div className="setting"><label htmlFor="count">NUMBER OF CLIPS</label><select id="count" value={clipCount} onChange={e => setClipCount(Number(e.target.value))}>{[1,2,3,4,5,6,8,10].map(n => <option key={n} value={n}>{n} clips</option>)}</select></div>
-          <div className="setting"><label htmlFor="length">MAX CLIP LENGTH</label><select id="length" value={clipLength} onChange={e => setClipLength(Number(e.target.value))}><option value={30}>30 seconds</option><option value={45}>45 seconds</option><option value={60}>60 seconds</option><option value={90}>90 seconds</option></select></div>
-          <div className="setting"><label>CAPTIONS</label><div className="settingValue"><span className="greenDot" /> Auto-generated</div></div>
-          <div className="setting"><label>VIDEO FORMAT</label><div className="settingValue">9:16 · 1080 × 1920</div></div>
-        </div>
-
-        <label className="rights"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /><span>I confirm I own this video or have permission to edit and publish it. I understand that captions, cropping, and effects do not remove copyright restrictions.</span></label>
-        <button className="generate" disabled={!file || !rights || busy} onClick={submit}>{busy ? <><span className="spinner" /> Processing video…</> : <>Generate my Shorts <span>↗</span></>}</button>
-        <p className="privacy">Your video is processed by the configured server. Do not upload private or sensitive footage.</p>
       </section>
-
-      {error && <div className="error">⚠ {error}</div>}
-      {result && <section className="results"><div className="sectionHead"><div><span className="step">02 / YOUR EXPORTS</span><h2>Your clips are ready</h2></div><a className="zip" href={`${API}${result.zip_url}`}>Download all ↓</a></div><p className="resultMeta">Job {result.job_id} · Source duration {result.duration_seconds}s · {result.clips.length} clips created</p><div className="clipGrid">{result.clips.map((clip, i) => <article className="clipCard" key={clip.filename}><div className="clipPreview"><span>9:16</span><strong>CLIP<br />{String(i + 1).padStart(2, "0")}</strong><small>{clip.duration_seconds}s</small></div><div className="clipInfo"><h3>Highlight {i + 1}</h3><p>{clip.start_seconds}s – {clip.end_seconds}s · Match score {clip.score}</p><blockquote>{clip.transcript_preview}</blockquote><a href={`${API}${clip.download_url}`} className="download">Download MP4 ↗</a></div></article>)}</div></section>}
-
-      <footer><span>CLIPFORGE AI</span><span>MAKE EVERY SECOND COUNT.</span></footer>
     </main>
   );
+}
+
+function formatTime(seconds: number) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}m ${s}s`;
 }
